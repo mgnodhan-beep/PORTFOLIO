@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ultimate Gesture Control: Move + Rotate + Zoom</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+    body { margin: 0; overflow: hidden; background: black; font-family: Arial, sans-serif; }
+    #bg-canvas { position: fixed; inset: 0; z-index: 0; }
+    #info {
+        position: fixed; top: 0; left: 0; padding: 15px; color: white;
+        background: rgba(0,0,0,0.6); z-index: 10; border-radius: 0 0 10px 0;
+    }
+    .input_video, .output_canvas {
+        position: fixed; bottom: 10px; width: 160px; height: 120px;
+        z-index: 9999; transform: scaleX(-1); border: 2px solid #00ffcc;
+    }
+    .input_video { left: 10px; display: none; }
+    .output_canvas { left: 10px; border-radius: 5px; }
+    #loading {
+        position: fixed; inset: 0; background: black; color: #00ffcc;
+        font-family: monospace; display: flex; align-items: center; justify-content: center; z-index: 10000;
+    }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.150.1/examples/jsm/"
+  }
+}
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+
+<body>
+<div id="loading">INITIALIZING SYSTEM...</div>
+
+<div id="info">
+    <h2>😎NODHAN M.G MASTER 3D CONTROL MODEL😎</h2>
+    <p>👋 HELLO MOVE YOUR HANDS</p>
+    <p>MG MODEL OF 3D</p>
+</div>
+
+<video class="input_video" autoplay playsinline></video>
+<canvas class="output_canvas"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- 1. SETUP ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.z = 35;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.domElement.id = "bg-canvas";
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+// --- 2. YOUR ORIGINAL PARTICLE MODEL ---
+const count = 15000;
+const geometry = new THREE.BufferGeometry();
+const positions = new Float32Array(count * 3);
+const colors = new Float32Array(count * 3);
+
+for (let i = 0; i < count * 3; i++) {
+    positions[i] = (Math.random() - 0.5) * 40;
+    colors[i] = Math.random();
+}
+
+geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+const material = new THREE.PointsMaterial({
+    size: 0.15,
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+});
+
+const particles = new THREE.Points(geometry, material);
+scene.add(particles);
+
+// --- 3. GESTURE ENGINE (MOVE + ROTATE + ZOOM) ---
+const targetPos = new THREE.Vector3(0, 0, 0);
+const targetRot = new THREE.Euler(0, 0, 0);
+let targetScale = 1.0;
+
+const videoElement = document.querySelector('.input_video');
+const canvasElement = document.querySelector('.output_canvas');
+const ctx = canvasElement.getContext('2d');
+
+const hands = new Hands({
+    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.75,
+    minTrackingConfidence: 0.75
+});
+
+hands.onResults(results => {
+    ctx.save();
+    ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    ctx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // A. POSITION (Wrist)
+        const wrist = landmarks[0];
+        targetPos.x = (wrist.x - 0.5) * -60; 
+        targetPos.y = (wrist.y - 0.5) * -50;
+
+        // B. ROTATION (Tilt between index and pinky)
+        const indexBase = landmarks[5];
+        const pinkyBase = landmarks[17];
+        targetRot.y = (indexBase.x - pinkyBase.x) * 6;
+        targetRot.x = (indexBase.y - wrist.y) * 3;
+
+        // C. ZOOM (Distance between Thumb Tip [4] and Index Tip [8])
+        const thumbTip = landmarks[4];
+        const indexTip = landmarks[8];
+        const pinchDist = Math.sqrt(
+            Math.pow(thumbTip.x - indexTip.x, 2) + 
+            Math.pow(thumbTip.y - indexTip.y, 2)
+        );
+        
+        // Map pinch to scale (0.2 to 2.5 range)
+        targetScale = THREE.MathUtils.clamp(pinchDist * 8, 0.2, 2.5);
+
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: '#00ffcc', lineWidth: 2 });
+        drawLandmarks(ctx, landmarks, { color: '#FFFFFF', radius: 1 });
+    }
+    ctx.restore();
+});
+
+const cameraMP = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({ image: videoElement }); },
+    width: 160, height: 120
+});
+cameraMP.start().then(() => document.getElementById('loading').style.display = "none");
+
+// --- 4. ANIMATION LOOP ---
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Smooth Transition (Lerp) for all transformations
+    particles.position.x += (targetPos.x - particles.position.x) * 0.1;
+    particles.position.y += (targetPos.y - particles.position.y) * 0.1;
+    
+    particles.rotation.y += (targetRot.y - particles.rotation.y) * 0.05;
+    particles.rotation.x += (targetRot.x - particles.rotation.x) * 0.05;
+
+    // Apply Zoom Scale
+    particles.scale.setScalar(THREE.MathUtils.lerp(particles.scale.x, targetScale, 0.1));
+
+    // Subtle background rotation
+    particles.rotation.y += 0.001;
+
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+animate();
+
+addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
